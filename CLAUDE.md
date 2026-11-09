@@ -149,84 +149,84 @@ prêt, il est invisible (pas grisé).
 > section et seulement celle-ci. La date est utile pour situer la dernière
 > mise à jour.
 
-## État au [date du jour] — après R5.1
+## État au [date du jour] — après R5.3
 
 **Côté base Supabase** :
-- Table `exercices` créée avec schéma polymorphe (colonne `type` 
-  discriminante, valeurs autorisées 'qcm', 'flashcard', 'auteur'). 
-  RLS activée, 4 politiques filtrées par auth.uid() = user_id.
-- Colonnes : id, user_id, cours_id (FK), fiche_id (FK), type, 
-  contenu jsonb, created_at.
-
-**Côté Worker `ficheeclair-api`** :
-- Nouvel endpoint POST /generate-qcm. Reçoit { fiche_id, n } 
-  (n entre 1 et 20, défaut 10). Génère N questions de QCM via 
-  Claude Sonnet 4.6, les insère dans `exercices` (type='qcm').
-- Quota partagé avec /generate-fiche : total fiches + exercices 
-  QCM du jour ≤ 10 (UTC).
-- Filtre anti-biais de longueur : rejette une question si la 
-  bonne réponse est plus longue que la 2e plus longue de plus 
-  de 10 caractères, ou plus courte que la 2e plus courte de plus 
-  de 10 caractères.
-- Shuffle des options avec Web Crypto (Fisher-Yates), tracking 
-  par flag pour éviter l'ambiguïté de indexOf.
-- CORS localhost ajouté en passant (mission annexe résolue).
+- Table `exercices` enrichie avec le type 'flashcard' (déjà autorisé 
+  par le check polymorphe posé en R5.1).
+- Format `contenu` jsonb pour flashcard : { recto: terme, verso: definition }.
+- Clé naturelle de matching avec les notions_cles : `terme` ↔ `recto` 
+  (comparaison exacte, sensible à la casse).
 
 **Côté frontend (`index.html`)** :
-- Bouton "Générer un QCM pour cette fiche" sur la vue de détail 
-  d'une fiche. Visible seulement si connecté et hors mode démo. 
-  Désactivé après une génération réussie (passe à "QCM généré") 
-  pour éviter les doubles clics et les doublons.
-- Système de toast créé (feAfficherToast), enfant direct de body, 
-  4s pour succès / 7s pour erreurs.
+- Bouton "Synchroniser les flashcards" sur la vue détail de fiche, 
+  à côté du bouton "Générer un QCM". Toute la logique côté SDK 
+  Supabase, pas d'appel Worker. INSERT/UPDATE/DELETE en parallèle 
+  via Promise.all. Garde-fou : si notions_cles vide, aucun DELETE 
+  déclenché.
+- UPDATE préserve les champs futurs du contenu via spread 
+  (...match.contenu, verso: ...) : prévoit l'ajout futur de champs 
+  comme données de répétition espacée.
+- Écran d'accueil de l'onglet "S'entraîner" refait en menu à deux 
+  cartes : "QCM" et "Flashcards", chacune avec son compteur 
+  d'éléments disponibles. État vide unifié si pool QCM et pool 
+  flashcards sont vides.
+- Mode flashcards complet : tirage de l'ensemble du pool mélangé 
+  Fisher-Yates, recto (terme seul) → bouton Retourner → verso 
+  (recto + définition + fiche d'origine) → auto-évaluation 
+  "Je savais" / "À revoir". Bouton "Terminer la session" en 
+  permanence. Reprise de session après switch d'onglet, exclusivité 
+  mutuelle entre sessions QCM et flashcards (l'une bloque l'autre).
+- Helper `feChargerPoolExercices(coursId, type)` : factorise la 
+  jointure-or-fallback pour QCM et flashcards.
+- Pools rechargés à chaque entrée dans l'onglet S'entraîner (pas 
+  de cache pour rester synchrone avec ce que l'utilisateur vient 
+  de générer).
 
 ## Roadmap
 
 ### Refonte vers la nouvelle architecture
-- ~~R1, R2, R2-bis~~ ✓
-- R3 — nav interne au cours (en attente)
-- R4 — migration du cours philo de l'esprit (en attente)
-- ~~R5.1~~ ✓ — table exercices + endpoint /generate-qcm + bouton 
-  générer
-- R5.2 — UI de jeu QCM (mode test : N questions tirées, score, 
-  correction avec explications)
-- R5.3 — type flashcard dérivé de notions_cles sans IA
-- R5.4 — type auteur généré par IA
-- R6+ — autres outils à rebrancher (Cartes, Disserter, Pong…)
+- ~~R1, R2, R2-bis, R5.1, R5.2, R5.3~~ ✓
+- R5.4 — type auteur généré par IA (nouvel endpoint Worker, 
+  asymétrique avec QCM)
+- R3 — partiellement absorbé par R5.2, à réviser
+- R4 — migration du cours philo de l'esprit
+- R6+ — autres outils à rebrancher
 
-## Prochaine mission
+## Leçons retenues (R5.3)
 
-R5.2 — UI de jeu QCM, à cadrer en début de prochaine session.
+- L'UPDATE polymorphe sur une colonne jsonb doit toujours préserver 
+  les champs existants (spread du contenu actuel), même si 
+  aujourd'hui le contenu n'a que deux champs. Anticipation des 
+  évolutions futures.
+- Quand on a un comportement destructif (DELETE silencieux), prévoir 
+  un garde-fou explicite. Cas typique : pas de notions_cles → ne 
+  supprime pas les flashcards existantes, sort proprement.
+- Quand plusieurs types de "sessions" coexistent dans un même 
+  onglet, prévoir l'exclusivité mutuelle au moment du lancement, 
+  pas au moment du rendu.
+- Mismatch de cadrage : ce que l'utilisateur dit vouloir au moment 
+  des questions binaires ne correspond pas toujours à sa vision 
+  réelle. Cas vécu en R5.3 : l'utilisateur a choisi "bouton sur 
+  la vue fiche" parce que c'était une option présentée, alors 
+  qu'il voyait spontanément une génération automatique invisible 
+  dans l'onglet S'entraîner. Toujours présenter aussi l'option 
+  "automatique" dans les futurs cadrages, même si elle paraît plus 
+  complexe.
 
-## Leçons retenues (R5.1)
-
-- Le filtre "ni la plus longue ni la plus courte" est trop strict : 
-  rejette ~50% des questions par pur hasard, même quand Claude 
-  équilibre bien. Le bon filtre est "écart > 10 caractères avec la 
-  2e valeur la plus proche".
-- Quand on assouplit un filtre, il faut renforcer le prompt 
-  système en amont (sinon Claude se laisse aller). Combinaison 
-  prompt renforcé + filtre raisonnable = ratio 3/3 en test.
-- `wrangler dev` peut basculer silencieusement sur un autre port 
-  (8788 au lieu de 8787) si le port est occupé par un Worker 
-  zombie. Toujours vérifier la ligne "Ready on http://localhost:..."
-  avant de lancer un curl. `lsof -i :8787` + `kill <PID>` pour 
-  nettoyer.
-- Ne jamais coller un JWT (ni quoi que ce soit commençant par `eyJ...`)
-  dans une conversation Claude ou ailleurs hors de son terminal local. 
-  Si fait par erreur : déconnexion + reconnexion sur Supabase pour 
-  invalider le JWT.
+Mission localhost-detection — faite
+Côté frontend (index.html) : les deux constantes FICHEECLAIR_API et FICHEECLAIR_API_QCM, auparavant en dur sur le domaine de prod, dérivent maintenant d'une base FICHEECLAIR_BASE qui détecte l'environnement : http://localhost:8787 si location.hostname ∈ {localhost, 127.0.0.1}, sinon le Worker prod. Les fetch héritent sans modification.
+Côté ficheeclair-api/wrangler.jsonc : ajout de "dev": { "port": 8787 } pour figer le port de wrangler dev, afin que l'URL locale corresponde toujours à la constante frontend.
+Vérification CORS : aucune modif nécessaire — buildCorsHeaders autorisait déjà tout http://localhost: (liste blanche dynamique, pas de wildcard). Le socle d'environnement est donc prêt pour R5.4 : un futur FICHEECLAIR_API_AUTEUR = FICHEECLAIR_BASE + '/generate-auteur' héritera de la détection ET de l'autorisation CORS.
+Dev local : API via wrangler dev dans ficheeclair-api/ (port 8787) ; frontend via python3 -m http.server 8788 à la racine (pas wrangler dev à la racine, qui boucle à cause de assets.directory: "."). Supabase : http://localhost:8788 ajouté aux Redirect URLs.
 
 ## Pool de missions annexes mis à jour
 
-- ~~CORS dev~~ ✓ (intégré dans R5.1)
-- (autres missions inchangées : 3b UX fiches, 3c photo mobile, 
-  3d PDF, 2B web search, PWA, partage de cours)
-- **Nouveau — Refactoriser FICHEECLAIR_API en détection localhost** : 
-  les constantes sont en dur sur la prod, ce qui empêche de tester 
-  le frontend en local contre le Worker local. À faire avant la 
-  prochaine mission qui ajouterait un endpoint au Worker.
-- **Nouveau — Page de visualisation des QCM par fiche** : permettre 
-  à l'utilisateur de voir combien de QCM existent sur une fiche et 
-  régénérer ou supprimer si besoin. Pas critique tant que R5.2 ne 
-  pose pas le problème de la régénération.
+- **NOUVEAU — Refonte UX de la génération QCM + flashcards.** 
+  Vision cible : pas de bouton "Générer/Synchroniser" sur la vue 
+  détail de fiche. À la place, dans l'onglet "S'entraîner", 
+  synchro automatique invisible à chaque ouverture (flashcards : 
+  trivial car gratuit ; QCM : plus complexe car coût API par fiche, 
+  à cadrer). Mission ouverte sans urgence — l'usage en condition 
+  réelle dira si l'UX actuelle est gênante ou pas.
+- (autres missions inchangées)
